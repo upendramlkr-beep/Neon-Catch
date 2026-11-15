@@ -1,0 +1,6 @@
+{
+  "name": "Neon Catch",
+  "description": "Fast-paced neon 2D arcade game where you catch falling balls, build combos, activate power-ups, and dodge bombs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

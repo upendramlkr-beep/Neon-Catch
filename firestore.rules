@@ -1,0 +1,188 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global safety net: deny all reads and writes by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidReferralCode(code) {
+      return code is string && code.size() >= 6 && code.size() <= 12 && code.matches('^[A-Z0-9]+$');
+    }
+
+    function isValidUserProfile(data) {
+      return isValidId(data.userId) &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 50 &&
+             isValidReferralCode(data.referralCode) &&
+             data.bonusShields is int && data.bonusShields >= 0 && data.bonusShields <= 1000 &&
+             data.starShards is int && data.starShards >= 0 && data.starShards <= 1000000 &&
+             data.referralCount is int && data.referralCount >= 0 && data.referralCount <= 10000 &&
+             data.bestScore is int && data.bestScore >= 0 && data.bestScore <= 100000000 &&
+             (!('referredByCode' in data) || isValidReferralCode(data.referredByCode)) &&
+             (!('referredByUid' in data) || isValidId(data.referredByUid)) &&
+             (!('lastClaimedRedeemerUid' in data) || isValidId(data.lastClaimedRedeemerUid)) &&
+             data.createdAt is timestamp && data.createdAt <= request.time &&
+             data.updatedAt is timestamp && data.updatedAt <= request.time;
+    }
+
+    function isValidReferralCodeEntry(data) {
+      return isValidId(data.ownerUid) &&
+             data.ownerDisplayName is string && data.ownerDisplayName.size() >= 1 && data.ownerDisplayName.size() <= 50 &&
+             isValidReferralCode(data.code) &&
+             data.createdAt is timestamp && data.createdAt <= request.time;
+    }
+
+    function isValidReferralRedemption(data) {
+      return isValidId(data.redeemerUid) &&
+             data.redeemerName is string && data.redeemerName.size() >= 1 && data.redeemerName.size() <= 50 &&
+             isValidReferralCode(data.code) &&
+             isValidId(data.referrerUid) &&
+             data.createdAt is timestamp && data.createdAt <= request.time;
+    }
+
+    function isValidClaimedReferral(data) {
+      return isValidId(data.redeemerUid) &&
+             data.redeemerName is string && data.redeemerName.size() >= 1 && data.redeemerName.size() <= 50 &&
+             data.rewardShields is int && data.rewardShields == 1 &&
+             data.rewardShards is int && data.rewardShards == 150 &&
+             data.claimedAt is timestamp && data.claimedAt <= request.time;
+    }
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if false;
+
+      allow create: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       incoming().userId == request.auth.uid &&
+                       incoming().keys().hasAll(['userId', 'displayName', 'referralCode', 'bonusShields', 'starShards', 'referralCount', 'bestScore', 'createdAt', 'updatedAt']) &&
+                       incoming().keys().hasOnly(['userId', 'displayName', 'referralCode', 'bonusShields', 'starShards', 'referralCount', 'bestScore', 'createdAt', 'updatedAt']) &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().bonusShields == 0 &&
+                       incoming().starShards == 0 &&
+                       incoming().referralCount == 0 &&
+                       existsAfter(/databases/$(database)/documents/referralCodes/$(incoming().referralCode)) &&
+                       getAfter(/databases/$(database)/documents/referralCodes/$(incoming().referralCode)).data.ownerUid == request.auth.uid;
+
+      allow update: if isSignedIn() &&
+                       isValidId(userId) &&
+                       request.auth.uid == userId &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().userId == existing().userId &&
+                       incoming().referralCode == existing().referralCode &&
+                       incoming().createdAt == existing().createdAt &&
+                       incoming().keys().hasOnly(['userId', 'displayName', 'referralCode', 'referredByCode', 'referredByUid', 'lastClaimedRedeemerUid', 'bonusShields', 'starShards', 'referralCount', 'bestScore', 'createdAt', 'updatedAt']) &&
+                       (
+                         // Action 1: Update display name / best score
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'bestScore', 'updatedAt']) &&
+                           incoming().bestScore >= existing().bestScore
+                         ) ||
+                         // Action 2: Consume 1 Bonus Shield when starting a shielded run
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly(['bonusShields', 'updatedAt']) &&
+                           existing().bonusShields >= 1 &&
+                           incoming().bonusShields == existing().bonusShields - 1
+                         ) ||
+                         // Action 3: Redeem a friend's referral code (atomic with /referralRedemptions/{userId})
+                         (
+                           !('referredByCode' in existing()) &&
+                           !('referredByUid' in existing()) &&
+                           incoming().diff(existing()).affectedKeys().hasOnly(['referredByCode', 'referredByUid', 'bonusShields', 'starShards', 'updatedAt']) &&
+                           incoming().referredByUid != request.auth.uid &&
+                           incoming().bonusShields == existing().bonusShields + 1 &&
+                           incoming().starShards == existing().starShards + 100 &&
+                           existsAfter(/databases/$(database)/documents/referralRedemptions/$(userId)) &&
+                           getAfter(/databases/$(database)/documents/referralRedemptions/$(userId)).data.code == incoming().referredByCode &&
+                           getAfter(/databases/$(database)/documents/referralRedemptions/$(userId)).data.referrerUid == incoming().referredByUid
+                         ) ||
+                         // Action 4: Claim an earned referrer reward (atomic with /users/{userId}/claimedReferrals/{redeemerUid})
+                         (
+                           incoming().diff(existing()).affectedKeys().hasOnly(['bonusShields', 'starShards', 'referralCount', 'lastClaimedRedeemerUid', 'updatedAt']) &&
+                           incoming().bonusShields == existing().bonusShields + 1 &&
+                           incoming().starShards == existing().starShards + 150 &&
+                           incoming().referralCount == existing().referralCount + 1 &&
+                           !exists(/databases/$(database)/documents/users/$(userId)/claimedReferrals/$(incoming().lastClaimedRedeemerUid)) &&
+                           existsAfter(/databases/$(database)/documents/users/$(userId)/claimedReferrals/$(incoming().lastClaimedRedeemerUid))
+                         )
+                       );
+
+      allow delete: if false;
+
+      match /claimedReferrals/{redeemerUid} {
+        allow get: if isSignedIn() && isValidId(userId) && isValidId(redeemerUid) && request.auth.uid == userId;
+        allow list: if isSignedIn() && request.auth.uid == userId;
+
+        allow create: if isSignedIn() &&
+                         isValidId(userId) &&
+                         isValidId(redeemerUid) &&
+                         request.auth.uid == userId &&
+                         incoming().keys().hasAll(['redeemerUid', 'redeemerName', 'rewardShields', 'rewardShards', 'claimedAt']) &&
+                         incoming().keys().hasOnly(['redeemerUid', 'redeemerName', 'rewardShields', 'rewardShards', 'claimedAt']) &&
+                         incoming().redeemerUid == redeemerUid &&
+                         isValidClaimedReferral(incoming()) &&
+                         exists(/databases/$(database)/documents/referralRedemptions/$(redeemerUid)) &&
+                         get(/databases/$(database)/documents/referralRedemptions/$(redeemerUid)).data.referrerUid == userId;
+
+        allow update, delete: if false;
+      }
+    }
+
+    match /referralCodes/{code} {
+      allow get: if isSignedIn() && isValidReferralCode(code);
+      allow list: if false;
+
+      allow create: if isSignedIn() &&
+                       isValidReferralCode(code) &&
+                       incoming().keys().hasAll(['ownerUid', 'ownerDisplayName', 'code', 'createdAt']) &&
+                       incoming().keys().hasOnly(['ownerUid', 'ownerDisplayName', 'code', 'createdAt']) &&
+                       incoming().ownerUid == request.auth.uid &&
+                       incoming().code == code &&
+                       isValidReferralCodeEntry(incoming());
+
+      allow update, delete: if false;
+    }
+
+    match /referralRedemptions/{redeemerUid} {
+      allow get: if isSignedIn() &&
+                    isValidId(redeemerUid) &&
+                    (request.auth.uid == redeemerUid || resource.data.referrerUid == request.auth.uid);
+
+      allow list: if isSignedIn() &&
+                     (resource.data.referrerUid == request.auth.uid || resource.data.redeemerUid == request.auth.uid);
+
+      allow create: if isSignedIn() &&
+                       isValidId(redeemerUid) &&
+                       request.auth.uid == redeemerUid &&
+                       incoming().keys().hasAll(['redeemerUid', 'redeemerName', 'code', 'referrerUid', 'createdAt']) &&
+                       incoming().keys().hasOnly(['redeemerUid', 'redeemerName', 'code', 'referrerUid', 'createdAt']) &&
+                       incoming().redeemerUid == request.auth.uid &&
+                       incoming().referrerUid != request.auth.uid &&
+                       isValidReferralRedemption(incoming()) &&
+                       exists(/databases/$(database)/documents/referralCodes/$(incoming().code)) &&
+                       get(/databases/$(database)/documents/referralCodes/$(incoming().code)).data.ownerUid == incoming().referrerUid &&
+                       existsAfter(/databases/$(database)/documents/users/$(redeemerUid)) &&
+                       getAfter(/databases/$(database)/documents/users/$(redeemerUid)).data.referredByCode == incoming().code;
+
+      allow update, delete: if false;
+    }
+  }
+}

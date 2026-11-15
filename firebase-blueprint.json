@@ -1,0 +1,80 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated Neon Catch player profile storing referral code, earned shields, star shards, referral count, and cloud best score.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Firebase Auth UID of the player." },
+        "displayName": { "type": "string", "description": "Player display name." },
+        "referralCode": { "type": "string", "description": "Unique uppercase alphanumeric referral code owned by this player." },
+        "referredByCode": { "type": "string", "description": "Referral code redeemed by this player, if any." },
+        "referredByUid": { "type": "string", "description": "UID of the player who referred this user, if any." },
+        "lastClaimedRedeemerUid": { "type": "string", "description": "Most recent redeemer UID claimed by this referrer." },
+        "bonusShields": { "type": "integer", "description": "Available Bonus Start Shields (+1 extra starting heart per shield)." },
+        "starShards": { "type": "integer", "description": "Total Star Shards earned via referrals." },
+        "referralCount": { "type": "integer", "description": "Total number of friends referred." },
+        "bestScore": { "type": "integer", "description": "Highest synced arcade score." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server creation timestamp (FieldValue.serverTimestamp())." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Server update timestamp (FieldValue.serverTimestamp())." }
+      },
+      "required": ["userId", "displayName", "referralCode", "bonusShields", "starShards", "referralCount", "bestScore", "createdAt", "updatedAt"]
+    },
+    "ReferralCode": {
+      "title": "ReferralCode",
+      "description": "Public lookup record mapping a unique referral code to its owner UID and display name (no PII).",
+      "type": "object",
+      "properties": {
+        "ownerUid": { "type": "string", "description": "Firebase Auth UID of the code owner." },
+        "ownerDisplayName": { "type": "string", "description": "Display name of the code owner." },
+        "code": { "type": "string", "description": "Unique uppercase referral code." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server creation timestamp (FieldValue.serverTimestamp())." }
+      },
+      "required": ["ownerUid", "ownerDisplayName", "code", "createdAt"]
+    },
+    "ReferralRedemption": {
+      "title": "ReferralRedemption",
+      "description": "Immutable record keyed by redeemerUid ensuring a user can redeem at most one referral code.",
+      "type": "object",
+      "properties": {
+        "redeemerUid": { "type": "string", "description": "UID of the user who redeemed the code." },
+        "redeemerName": { "type": "string", "description": "Display name of the redeemer." },
+        "code": { "type": "string", "description": "Referral code that was redeemed." },
+        "referrerUid": { "type": "string", "description": "UID of the friend who owns the referral code." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server creation timestamp (FieldValue.serverTimestamp())." }
+      },
+      "required": ["redeemerUid", "redeemerName", "code", "referrerUid", "createdAt"]
+    },
+    "ClaimedReferral": {
+      "title": "ClaimedReferral",
+      "description": "Per-referrer ledger record preventing duplicate reward claims for a given redeemer.",
+      "type": "object",
+      "properties": {
+        "redeemerUid": { "type": "string", "description": "UID of the referred friend." },
+        "redeemerName": { "type": "string", "description": "Display name of the referred friend." },
+        "rewardShields": { "type": "integer", "description": "Shields awarded (1)." },
+        "rewardShards": { "type": "integer", "description": "Star Shards awarded (150)." },
+        "claimedAt": { "type": "string", "format": "date-time", "description": "Server claim timestamp (FieldValue.serverTimestamp())." }
+      },
+      "required": ["redeemerUid", "redeemerName", "rewardShields", "rewardShards", "claimedAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Owner-only player profile with referral code, rewards, and high score."
+    },
+    "/users/{userId}/claimedReferrals/{redeemerUid}": {
+      "schema": { "$ref": "#/entities/ClaimedReferral" },
+      "description": "Owner-only ledger of claimed referral rewards."
+    },
+    "/referralCodes/{code}": {
+      "schema": { "$ref": "#/entities/ReferralCode" },
+      "description": "Lookup index mapping referral code ID to owner UID and display name."
+    },
+    "/referralRedemptions/{redeemerUid}": {
+      "schema": { "$ref": "#/entities/ReferralRedemption" },
+      "description": "Append-only redemption records readable by redeemer or referrer."
+    }
+  }
+}
